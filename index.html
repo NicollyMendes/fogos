@@ -8,379 +8,238 @@
   <meta name="theme-color" content="#000000" />
   <title>Naclara & Gabies</title>
   <style>
-    *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-    html,body{overflow:hidden;position:fixed;width:100%;height:100%;height:100dvh;background:#000;touch-action:none;-webkit-user-select:none;user-select:none}
-    canvas{position:fixed;top:0;left:0;width:100vw;height:100vh;height:100dvh;z-index:1;touch-action:none}
+    *{margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+    html,body{overflow:hidden;position:fixed;width:100%;height:100%;background:#000;touch-action:none;-webkit-user-select:none;user-select:none}
+    canvas{position:fixed;top:0;left:0;width:100%;height:100%;touch-action:none}
   </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <script>
-// =============================================
-// FOGOS DE ARTIFÍCIO - INTERATIVO MOBILE
-// Explosões INSTANTÂNEAS no dedo, sem delay
-// Otimizado para iPhone 11
-// =============================================
+// FOGOS ULTRA LEVE - MOBILE FIRST
+// Sem glow, sem radialGradient, poucas partículas, velocidade alta
 
 const C = document.getElementById('c');
-const ctx = C.getContext('2d', { alpha: false });
-const dpr = Math.min(window.devicePixelRatio || 2, 2);
+const ctx = C.getContext('2d');
 let W, H;
 
 function resize() {
-  W = window.innerWidth * dpr;
-  H = window.innerHeight * dpr;
-  C.width = W; C.height = H;
-  C.style.width = '100%'; C.style.height = '100%';
+  // SEM multiplicar por DPR - muito mais leve
+  W = window.innerWidth;
+  H = window.innerHeight;
+  C.width = W;
+  C.height = H;
 }
 resize();
 window.addEventListener('resize', resize);
 
-// --- Pool de partículas para evitar GC ---
-const MAX_P = 3000;
-const px = new Float32Array(MAX_P);
-const py = new Float32Array(MAX_P);
-const pvx = new Float32Array(MAX_P);
-const pvy = new Float32Array(MAX_P);
-const pa = new Float32Array(MAX_P);  // alpha
-const pr = new Float32Array(MAX_P);  // red
-const pg = new Float32Array(MAX_P);  // green
-const pb = new Float32Array(MAX_P);  // blue
-const pdc = new Float32Array(MAX_P); // decay
-const psz = new Float32Array(MAX_P); // size
-const pfr = new Float32Array(MAX_P); // friction
-const pgr = new Float32Array(MAX_P); // gravity
-const pfl = new Float32Array(MAX_P); // flicker phase
-const pfs = new Float32Array(MAX_P); // flicker speed
-let pCount = 0;
+// Pool simples - arrays tipados
+const MAX = 1200;
+const ax = new Float32Array(MAX);
+const ay = new Float32Array(MAX);
+const avx = new Float32Array(MAX);
+const avy = new Float32Array(MAX);
+const aa = new Float32Array(MAX);  // alpha
+const ar = new Uint8Array(MAX);
+const ag = new Uint8Array(MAX);
+const ab = new Uint8Array(MAX);
+const adc = new Float32Array(MAX); // decay
+const asz = new Float32Array(MAX); // size
+let n = 0;
 
-function addParticle(x, y, vx, vy, r, g, b, alpha, decay, size, friction, gravity, flPhase, flSpeed) {
-  if (pCount >= MAX_P) return;
-  const i = pCount++;
-  px[i]=x; py[i]=y; pvx[i]=vx; pvy[i]=vy;
-  pr[i]=r; pg[i]=g; pb[i]=b; pa[i]=alpha;
-  pdc[i]=decay; psz[i]=size; pfr[i]=friction; pgr[i]=gravity;
-  pfl[i]=flPhase; pfs[i]=flSpeed;
+function add(x,y,vx,vy,r,g,b,alpha,decay,size) {
+  if (n >= MAX) return;
+  const i = n++;
+  ax[i]=x; ay[i]=y; avx[i]=vx; avy[i]=vy;
+  ar[i]=r; ag[i]=g; ab[i]=b; aa[i]=alpha;
+  adc[i]=decay; asz[i]=size;
 }
 
-function removeParticle(i) {
-  pCount--;
-  if (i < pCount) {
-    px[i]=px[pCount]; py[i]=py[pCount]; pvx[i]=pvx[pCount]; pvy[i]=pvy[pCount];
-    pr[i]=pr[pCount]; pg[i]=pg[pCount]; pb[i]=pb[pCount]; pa[i]=pa[pCount];
-    pdc[i]=pdc[pCount]; psz[i]=psz[pCount]; pfr[i]=pfr[pCount]; pgr[i]=pgr[pCount];
-    pfl[i]=pfl[pCount]; pfs[i]=pfs[pCount];
+function del(i) {
+  n--;
+  if (i < n) {
+    ax[i]=ax[n]; ay[i]=ay[n]; avx[i]=avx[n]; avy[i]=avy[n];
+    ar[i]=ar[n]; ag[i]=ag[n]; ab[i]=ab[n]; aa[i]=aa[n];
+    adc[i]=adc[n]; asz[i]=asz[n];
   }
 }
 
-// --- Cores ---
-function white() {
-  const v = 210 + Math.random()*45;
+// Cores
+function rndCol() {
   const t = Math.random();
-  if (t < 0.5) return [v, v, v];
-  if (t < 0.75) return [v, v*0.95, v*0.88];
-  return [v*0.9, v*0.95, v];
+  if (t < 0.5) { const v=210+Math.random()*45|0; return [v,v,v]; }
+  if (t < 0.75) return [255, 200+Math.random()*40|0, 90+Math.random()*50|0];
+  return [200+Math.random()*55|0, 210+Math.random()*45|0, 255];
 }
 
-function gold() { return [255, 200+Math.random()*40, 80+Math.random()*50]; }
+// === EXPLOSÕES - poucas partículas, velocidade ALTA ===
 
-function randColor() {
-  const r = Math.random();
-  if (r < 0.55) return white();
-  if (r < 0.8) return gold();
-  return [210+Math.random()*45, 210+Math.random()*45, 255];
-}
-
-// --- Tipos de explosão (INSTANTÂNEA no ponto) ---
-
-// Chrysanthemum - esfera densa
-function chrysanthemum(x, y) {
-  const n = 60 + Math.floor(Math.random()*30);
-  const c = randColor();
-  for (let i = 0; i < n; i++) {
-    const a = Math.random()*6.2832;
-    const phi = Math.acos(2*Math.random()-1);
-    const sp = 1.5 + Math.random()*3.5;
-    const br = 0.7+Math.random()*0.3;
-    addParticle(x, y,
-      Math.cos(a)*Math.sin(phi)*sp, Math.sin(a)*Math.sin(phi)*sp*0.8,
-      c[0]*br, c[1]*br, c[2]*br, 1,
-      0.006+Math.random()*0.006, 1+Math.random()*1.5,
-      0.978, 0.022+Math.random()*0.008,
-      Math.random()*6.28, 4+Math.random()*8
-    );
-  }
-}
-
-// Star - formato estrela
-function star(x, y) {
-  const pts = Math.random()>0.5 ? 5 : 6;
-  const n = 50 + Math.floor(Math.random()*25);
-  const c = randColor();
-  for (let i = 0; i < n; i++) {
-    const arm = Math.floor(Math.random()*pts);
-    const ba = (arm/pts)*6.2832 - 1.5708;
-    const a = ba + (Math.random()-0.5)*0.35;
-    const sp = 1.2+Math.random()*3.5;
-    addParticle(x, y,
-      Math.cos(a)*sp, Math.sin(a)*sp,
-      c[0], c[1], c[2], 1,
-      0.007+Math.random()*0.006, 1.2+Math.random()*1.2,
-      0.977, 0.02+Math.random()*0.008,
-      Math.random()*6.28, 6+Math.random()*8
-    );
-  }
-  // Centro
-  for (let i = 0; i < 8; i++) {
+function burst(x, y) {
+  const cnt = 20 + (Math.random()*12|0);
+  const c = rndCol();
+  for (let i = 0; i < cnt; i++) {
     const a = Math.random()*6.28;
-    addParticle(x, y,
-      Math.cos(a)*0.5, Math.sin(a)*0.5,
-      255, 255, 255, 1,
-      0.025, 1.8+Math.random(), 0.96, 0.015, 0, 10
-    );
-  }
-}
-
-// Peony - esférica grande
-function peony(x, y) {
-  const n = 45+Math.floor(Math.random()*20);
-  const c = randColor();
-  for (let i = 0; i < n; i++) {
-    const a = Math.random()*6.2832;
-    const sp = 1+Math.random()*3.5;
-    const br = 0.7+Math.random()*0.3;
-    addParticle(x, y,
-      Math.cos(a)*sp, Math.sin(a)*sp*0.85,
-      c[0]*br, c[1]*br, c[2]*br, 1,
-      0.007+Math.random()*0.007, 1.5+Math.random()*2,
-      0.975, 0.025+Math.random()*0.01,
-      Math.random()*6.28, 5+Math.random()*8
-    );
-  }
-}
-
-// Willow - cai como salgueiro
-function willow(x, y) {
-  const n = 50+Math.floor(Math.random()*25);
-  const c = gold();
-  for (let i = 0; i < n; i++) {
-    const a = Math.random()*6.2832;
-    const sp = 0.8+Math.random()*2.8;
-    addParticle(x, y,
-      Math.cos(a)*sp, Math.sin(a)*sp*0.6 - 0.8,
+    const sp = 3 + Math.random()*6; // RÁPIDO
+    add(x, y, Math.cos(a)*sp, Math.sin(a)*sp,
       c[0], c[1], c[2], 1,
-      0.003+Math.random()*0.003, 0.8+Math.random()*1,
-      0.988, 0.04+Math.random()*0.015,
-      Math.random()*6.28, 3+Math.random()*4
-    );
+      0.012+Math.random()*0.01, 1.5+Math.random()*1.5);
   }
 }
 
-// Sparkle burst - mini explosão de faíscas
+function starBurst(x, y) {
+  const pts = Math.random()>0.5 ? 5 : 6;
+  const cnt = 18 + (Math.random()*10|0);
+  const c = rndCol();
+  for (let i = 0; i < cnt; i++) {
+    const arm = Math.random()*pts|0;
+    const ba = (arm/pts)*6.28;
+    const a = ba + (Math.random()-0.5)*0.3;
+    const sp = 3 + Math.random()*5;
+    add(x, y, Math.cos(a)*sp, Math.sin(a)*sp,
+      c[0], c[1], c[2], 1,
+      0.012+Math.random()*0.008, 1.2+Math.random()*1.2);
+  }
+}
+
+function shower(x, y) {
+  const cnt = 22 + (Math.random()*10|0);
+  const c = rndCol();
+  for (let i = 0; i < cnt; i++) {
+    const a = Math.random()*6.28;
+    const sp = 1.5 + Math.random()*4;
+    add(x, y, Math.cos(a)*sp, Math.sin(a)*sp*0.5 - 1,
+      c[0], c[1], c[2], 1,
+      0.006+Math.random()*0.005, 1+Math.random()*1);
+  }
+}
+
 function sparkle(x, y) {
-  const n = 25+Math.floor(Math.random()*15);
-  for (let i = 0; i < n; i++) {
-    const a = Math.random()*6.2832;
-    const sp = 0.5+Math.random()*2;
-    addParticle(x, y,
-      Math.cos(a)*sp, Math.sin(a)*sp,
+  const cnt = 15 + (Math.random()*8|0);
+  for (let i = 0; i < cnt; i++) {
+    const a = Math.random()*6.28;
+    const sp = 2 + Math.random()*5;
+    add(x, y, Math.cos(a)*sp, Math.sin(a)*sp,
       255, 255, 255, 1,
-      0.015+Math.random()*0.015, 0.5+Math.random()*0.8,
-      0.97, 0.018,
-      Math.random()*6.28, 10+Math.random()*10
-    );
+      0.02+Math.random()*0.015, 0.8+Math.random()*0.8);
   }
 }
 
-// Crackle - mini estouros
-function crackle(x, y) {
-  const n = 35+Math.floor(Math.random()*15);
-  const c = randColor();
-  for (let i = 0; i < n; i++) {
-    const a = Math.random()*6.2832;
-    const sp = 2+Math.random()*3;
-    addParticle(x, y,
-      Math.cos(a)*sp, Math.sin(a)*sp,
+function ring(x, y) {
+  const cnt = 24;
+  const c = rndCol();
+  const sp = 4 + Math.random()*2;
+  for (let i = 0; i < cnt; i++) {
+    const a = (i/cnt)*6.28;
+    add(x, y, Math.cos(a)*sp, Math.sin(a)*sp,
       c[0], c[1], c[2], 1,
-      0.012+Math.random()*0.01, 0.8+Math.random()*1,
-      0.965, 0.03+Math.random()*0.01,
-      Math.random()*6.28, 8+Math.random()*8
-    );
+      0.014+Math.random()*0.006, 1.5+Math.random());
   }
 }
 
-// Array de tipos
-const TYPES = [chrysanthemum, star, peony, willow, sparkle, crackle];
-
-function randomExplosion(x, y) {
-  TYPES[Math.floor(Math.random()*TYPES.length)](x, y);
-}
-
-// Flash no ponto da explosão
-function flash(x, y) {
-  ctx.globalCompositeOperation = 'lighter';
-  const g = ctx.createRadialGradient(x, y, 0, x, y, 40*dpr);
-  g.addColorStop(0, 'rgba(255,255,255,0.5)');
-  g.addColorStop(0.3, 'rgba(255,255,255,0.15)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.beginPath();
-  ctx.arc(x, y, 40*dpr, 0, 6.2832);
-  ctx.fillStyle = g;
-  ctx.fill();
-}
-
-// === INTERAÇÃO - TOQUE E ARRASTAR ===
-let lastTouchX = 0, lastTouchY = 0;
-let lastExplodeTime = 0;
-const EXPLODE_INTERVAL = 60; // Explodir a cada 60ms ao arrastar (muito responsivo)
-
-function getCanvasPos(e) {
-  let cx, cy;
-  if (e.touches && e.touches.length > 0) {
-    cx = e.touches[0].clientX;
-    cy = e.touches[0].clientY;
-  } else {
-    cx = e.clientX;
-    cy = e.clientY;
-  }
-  const rect = C.getBoundingClientRect();
-  return {
-    x: (cx - rect.left) * (W / rect.width),
-    y: (cy - rect.top) * (H / rect.height)
-  };
-}
-
-function explodeAt(x, y) {
-  flash(x, y);
-  randomExplosion(x, y);
-  // Chance de dupla explosão
-  if (Math.random() > 0.6) {
-    setTimeout(() => randomExplosion(x + (Math.random()-0.5)*40, y + (Math.random()-0.5)*40), 50);
+function doubleBurst(x, y) {
+  burst(x, y);
+  const c2 = rndCol();
+  const cnt = 12;
+  for (let i = 0; i < cnt; i++) {
+    const a = Math.random()*6.28;
+    const sp = 1.5 + Math.random()*2.5;
+    add(x, y, Math.cos(a)*sp, Math.sin(a)*sp,
+      c2[0], c2[1], c2[2], 1,
+      0.008+Math.random()*0.006, 2+Math.random());
   }
 }
 
-function onTouchStart(e) {
+const TYPES = [burst, starBurst, shower, sparkle, ring, doubleBurst];
+
+function randomBoom(x, y) {
+  TYPES[Math.random()*TYPES.length|0](x, y);
+}
+
+// === TOUCH - INSTANTÂNEO ===
+let lastT = 0;
+
+function pos(e) {
+  const t = e.touches ? e.touches[0] : e;
+  return { x: t.clientX, y: t.clientY };
+}
+
+function boom(e) {
+  const p = pos(e);
+  randomBoom(p.x, p.y);
+}
+
+C.addEventListener('touchstart', function(e) {
   e.preventDefault();
-  const p = getCanvasPos(e);
-  lastTouchX = p.x; lastTouchY = p.y;
-  explodeAt(p.x, p.y);
-  lastExplodeTime = performance.now();
-}
+  boom(e);
+  lastT = performance.now();
+}, { passive: false });
 
-function onTouchMove(e) {
+C.addEventListener('touchmove', function(e) {
   e.preventDefault();
   const now = performance.now();
-  const p = getCanvasPos(e);
-  lastTouchX = p.x; lastTouchY = p.y;
-
-  if (now - lastExplodeTime >= EXPLODE_INTERVAL) {
-    explodeAt(p.x, p.y);
-    lastExplodeTime = now;
+  // Explodir a cada 50ms ao arrastar - super responsivo
+  if (now - lastT >= 50) {
+    boom(e);
+    lastT = now;
   }
-}
+}, { passive: false });
 
-// Touch
-C.addEventListener('touchstart', onTouchStart, { passive: false });
-C.addEventListener('touchmove', onTouchMove, { passive: false });
-
-// Mouse
-let mouseDown = false;
-C.addEventListener('mousedown', function(e) {
-  mouseDown = true;
-  const p = getCanvasPos(e);
-  explodeAt(p.x, p.y);
-  lastExplodeTime = performance.now();
-});
+// Mouse (PC)
+let md = false;
+C.addEventListener('mousedown', function(e) { md=true; boom(e); lastT=performance.now(); });
 C.addEventListener('mousemove', function(e) {
-  if (!mouseDown) return;
+  if (!md) return;
   const now = performance.now();
-  if (now - lastExplodeTime >= EXPLODE_INTERVAL) {
-    const p = getCanvasPos(e);
-    explodeAt(p.x, p.y);
-    lastExplodeTime = now;
-  }
+  if (now - lastT >= 50) { boom(e); lastT = now; }
 });
-C.addEventListener('mouseup', function() { mouseDown = false; });
-C.addEventListener('mouseleave', function() { mouseDown = false; });
+C.addEventListener('mouseup', function() { md=false; });
 
-// === AUTO-LAUNCH (fogos automáticos de fundo) ===
+// Auto fogos de fundo
 let lastAuto = 0;
-
-function autoLaunch(time) {
-  if (time - lastAuto > 1200 + Math.random()*1000) {
-    const x = Math.random()*W*0.8 + W*0.1;
-    const y = Math.random()*H*0.4 + H*0.05;
-    explodeAt(x, y);
-    lastAuto = time;
+function autoFire(t) {
+  if (t - lastAuto > 1500 + Math.random()*1500) {
+    randomBoom(Math.random()*W*0.8+W*0.1, Math.random()*H*0.5+H*0.05);
+    lastAuto = t;
   }
 }
 
-// Fogos iniciais
-setTimeout(() => explodeAt(W*0.3, H*0.25), 200);
-setTimeout(() => explodeAt(W*0.7, H*0.2), 500);
-setTimeout(() => explodeAt(W*0.5, H*0.35), 800);
+// Iniciais
+setTimeout(()=>randomBoom(W*0.3,H*0.3), 200);
+setTimeout(()=>randomBoom(W*0.7,H*0.2), 500);
 
-// === LOOP DE ANIMAÇÃO ===
-function animate(time) {
-  // Fade - fundo preto com transparência para criar trails
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+// === LOOP - ULTRA LEVE ===
+function frame(t) {
+  // Fade preto - cria trail
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
   ctx.fillRect(0, 0, W, H);
 
-  ctx.globalCompositeOperation = 'lighter';
+  autoFire(t);
 
-  // Auto fogos
-  autoLaunch(time);
+  // Atualizar e desenhar - SEM glow, SEM radialGradient
+  for (let i = n - 1; i >= 0; i--) {
+    avx[i] *= 0.98;  // friction
+    avy[i] *= 0.98;
+    avy[i] += 0.08;  // gravidade
+    ax[i] += avx[i];
+    ay[i] += avy[i];
+    aa[i] -= adc[i];
 
-  // Atualizar e desenhar partículas
-  for (let i = pCount - 1; i >= 0; i--) {
-    // Física
-    pvx[i] *= pfr[i];
-    pvy[i] *= pfr[i];
-    pvy[i] += pgr[i];
-    px[i] += pvx[i];
-    py[i] += pvy[i];
-    pa[i] -= pdc[i];
+    if (aa[i] <= 0) { del(i); continue; }
 
-    if (pa[i] <= 0) { removeParticle(i); continue; }
+    // Cintilação simples
+    const flk = Math.random() > 0.03 ? 1 : 0.2;
+    const alpha = aa[i] * flk;
 
-    // Cintilação
-    let fl = 1;
-    if (pfs[i] > 0) {
-      fl = 0.55 + 0.45 * Math.sin(time * 0.001 * pfs[i] + pfl[i]);
-      if (Math.random() < 0.02) fl *= 0.15; // Piscar estrela
-    }
-
-    const alpha = pa[i] * fl;
-    if (alpha < 0.01) continue;
-
-    const sz = psz[i] * dpr;
-    const ri = pr[i]|0;
-    const gi = pg[i]|0;
-    const bi = pb[i]|0;
-
-    // Desenhar partícula
-    ctx.beginPath();
-    ctx.arc(px[i], py[i], sz, 0, 6.2832);
-    ctx.fillStyle = `rgba(${ri},${gi},${bi},${alpha})`;
-    ctx.fill();
-
-    // Glow suave
-    if (sz > 1 && alpha > 0.15) {
-      const gg = ctx.createRadialGradient(px[i],py[i],0, px[i],py[i], sz*2.5);
-      gg.addColorStop(0, `rgba(${ri},${gi},${bi},${alpha*0.12})`);
-      gg.addColorStop(1, `rgba(${ri},${gi},${bi},0)`);
-      ctx.beginPath();
-      ctx.arc(px[i], py[i], sz*2.5, 0, 6.2832);
-      ctx.fillStyle = gg;
-      ctx.fill();
-    }
+    // Desenhar - só fillRect, muito mais rápido que arc
+    const sz = asz[i];
+    ctx.fillStyle = `rgba(${ar[i]},${ag[i]},${ab[i]},${alpha})`;
+    ctx.fillRect(ax[i]-sz*0.5, ay[i]-sz*0.5, sz, sz);
   }
 
-  requestAnimationFrame(animate);
+  requestAnimationFrame(frame);
 }
 
-requestAnimationFrame(animate);
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
